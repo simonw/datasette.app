@@ -6,10 +6,11 @@ const {
   dialog,
   shell,
   ipcMain,
+  net
 } = require("electron");
 const EventEmitter = require("events");
 const crypto = require("crypto");
-const request = require("electron-request");
+// const request = require("electron-request");
 const path = require("path");
 const os = require("os");
 const cp = require("child_process");
@@ -22,7 +23,9 @@ const util = require("util");
 const execFile = util.promisify(cp.execFile);
 const mkdir = util.promisify(fs.mkdir);
 
-require("update-electron-app")({
+const {updateElectronApp } = require("update-electron-app")
+
+updateElectronApp({
   updateInterval: "1 hour",
 });
 
@@ -118,17 +121,36 @@ class DatasetteServer {
     }
   }
   async about() {
-    const response = await request(
-      `http://localhost:${this.port}/-/versions.json`
-    );
-    const data = await response.json();
-    return [
-      "An open source multi-tool for exploring and publishing data",
-      "",
-      `Datasette: ${data.datasette.version}`,
-      `Python: ${data.python.version}`,
-      `SQLite: ${data.sqlite.version}`,
-    ].join("\n");
+    return new Promise((resolve, reject) => {
+      const request = net.request({
+        method: 'GET',
+        url: `http://localhost:${this.port}/-/versions.json`
+      });
+  
+      request.on('response', (response) => {
+        let body = '';
+        response.on('data', (chunk) => {
+          body += chunk.toString();
+        });
+        response.on('end', () => {
+          const data = JSON.parse(body);
+          const result = [
+            "An open source multi-tool for exploring and publishing data",
+            "",
+            `Datasette: ${data.datasette.version}`,
+            `Python: ${data.python.version}`,
+            `SQLite: ${data.sqlite.version}`,
+          ].join("\n");
+          resolve(result);
+        });
+      });
+  
+      request.on('error', (error) => {
+        reject(error);
+      });
+  
+      request.end();
+    });
   }
   async setAccessControl(accessControl) {
     if (accessControl == this.accessControl) {
@@ -244,12 +266,31 @@ class DatasetteServer {
   }
 
   async apiRequest(path, body) {
-    return await request(`http://localhost:${this.port}${path}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-      headers: {
-        Authorization: `Bearer ${this.apiToken}`,
-      },
+    return new Promise((resolve, reject) => {
+      const request = net.request({
+        method: 'POST',
+        url: `http://localhost:${this.port}${path}`
+      });
+  
+      request.setHeader('Authorization', `Bearer ${this.apiToken}`);
+      request.setHeader('Content-Type', 'application/json');
+  
+      request.on('response', (response) => {
+        let responseBody = '';
+        response.on('data', (chunk) => {
+          responseBody += chunk.toString();
+        });
+        response.on('end', () => {
+          resolve(JSON.parse(responseBody));
+        });
+      });
+  
+      request.on('error', (error) => {
+        reject(error);
+      });
+  
+      request.write(JSON.stringify(body));
+      request.end();
     });
   }
 
@@ -371,7 +412,7 @@ class DatasetteServer {
       // Check Python interpreter still works, using
       // ~/.datasette-app/venv/bin/python3.9 --version
       // See https://github.com/simonw/datasette-app/issues/89
-      const venv_python = path.join(venv_dir, "bin", "python3.9");
+      const venv_python = path.join(venv_dir, "bin", "python3");
       try {
         await this.execCommand(venv_python, ["--version"]);
         shouldCreateVenv = false;
@@ -453,9 +494,9 @@ class DatasetteServer {
 function findPython() {
   const possibilities = [
     // In packaged app
-    path.join(process.resourcesPath, "python", "bin", "python3.9"),
+    path.join(process.resourcesPath, "python", "bin", "python3"),
     // In development
-    path.join(__dirname, "python", "bin", "python3.9"),
+    path.join(__dirname, "python", "bin", "python3"),
   ];
   for (const path of possibilities) {
     if (fs.existsSync(path)) {
